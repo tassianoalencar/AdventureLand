@@ -1,191 +1,219 @@
-const CONFIG = {
-  MAX_GOLD: 500_000,
-  TARGETS: ["tortoise"],
+/**
+ * warrior.js - clone do ranger com comportamento de tank
+ */
+
+var CONFIG = {
+  MAX_GOLD: 500000,
+  TARGETS: ["squig"],
   PRIORITY_TARGETS: ["phoenix"],
   MERCHANT: "MerchCruell",
-  LEADER: "MyCruell",
-  FOLLOW_DIST: 35,
-  MIN_FREE_SLOTS: 5,
+
+  KITE_ENABLED: false,
+
+  MIN_FREE_SLOTS: 1,
   MIN_POTIONS: 50,
-  REFILL_QUANTITY: 500,
-  POTION_TYPES: ["hpot0", "mpot0"],
-  MIN_HP: character.max_hp * 0.7,
-  MIN_MP: character.max_mp * 0.4
+  REFILL_QUANTITY: 999,
+  POTION_TYPES: ["hpot1", "mpot1"],
+
+  MIN_HP: character.max_hp * 0.5,
+  MIN_MP: character.max_mp * 0.3
 };
 
-let estado = "farmando";
-let pedidoSuprimentoEnviado = false;
-let target_geral = null;
+var estado = "farmando";
+var pedidoSuprimentoEnviado = false;
 
-async function warriorLoop() {
+// ================== FARM LOOP ==================
+async function farmLoop() {
   try {
-    if (character.rip || estado === "esperando_merchant") return;
 
-    let target = get_targeted_monster();
+    if (character.rip) {
+      estado = "farmando";
+      pedidoSuprimentoEnviado = false;
 
-    // 1. Procura por Alvos Prioritários Primeiro
+      respawn();
+
+      setTimeout(() => {
+        smart_move(CONFIG.TARGETS[0]);
+      }, 1500);
+
+      return setTimeout(farmLoop, 1000);
+    }
+
+    if (estado === "esperando_merchant") return;
+
+    var target = get_targeted_monster();
+
+    // PRIORITY
     if (!target || target.dead || CONFIG.PRIORITY_TARGETS.indexOf(target.mtype) === -1) {
-      for (let i = 0; i < CONFIG.PRIORITY_TARGETS.length; i++) {
-        let pTarget = get_nearest_monster({ type: CONFIG.PRIORITY_TARGETS[i] });
-        if (pTarget) {
-          target = pTarget;
-          change_target(target);
+      for (let type of CONFIG.PRIORITY_TARGETS) {
+        let t = get_nearest_monster({ type });
+        if (t) {
+          target = t;
+          change_target(t);
           break;
         }
       }
     }
 
-    // 2. Procura por Alvos Padrão se não houver prioritário
-    if (!target || target.dead || (CONFIG.TARGETS.indexOf(target.mtype) === -1 && CONFIG.PRIORITY_TARGETS.indexOf(target.mtype) === -1)) {
-      for (let j = 0; j < CONFIG.TARGETS.length; j++) {
-        let nTarget = get_nearest_monster({ type: CONFIG.TARGETS[j] });
-        if (nTarget) {
-          target = nTarget;
-          change_target(target);
+    // NORMAL
+    if (!target || target.dead ||
+      (CONFIG.TARGETS.indexOf(target.mtype) === -1 &&
+       CONFIG.PRIORITY_TARGETS.indexOf(target.mtype) === -1)) {
+
+      for (let type of CONFIG.TARGETS) {
+        let t = get_nearest_monster({ type });
+        if (t) {
+          target = t;
+          change_target(t);
           break;
         }
       }
     }
 
     if (target) {
-      target_geral = target;
 
-      // Taunt
-      if (can_use("taunt") && distance(character, target) < 200) {
-        await use_skill("taunt", target);
-        reduce_cooldown("taunt", Math.min(...parent.pings))
+      var dist = distance(character, target);
+
+      // 🛡 Tank aproxima SEM kite
+      if (dist > character.range) {
+        move(
+          character.x + (target.x - character.x) * 0.3,
+          character.y + (target.y - character.y) * 0.3
+        );
       }
 
+      // ataque
       if (can_attack(target)) {
         await attack(target);
-        reduce_cooldown("attack", Math.min(...parent.pings))
+        reduce_cooldown("attack", Math.min(...parent.pings));
       }
+
+      // taunt
+      if (can_use("taunt")) {
+        await use_skill("taunt", target);
+      }
+
+      // stomp (se tiver)
+      if (can_use("stomp")) {
+        await use_skill("stomp");
+      }
+
+    } else if (!smart.moving) {
+      smart_move(CONFIG.TARGETS[0]);
     }
-  } catch (e) {
-    console.error(e);
-  }
 
-  setTimeout(warriorLoop, Math.max(100, parent.next_skill['attack'].getTime() - Date.now()));
-
-}
-warriorLoop();
-
-let orbitAngle = 0;
-async function loopMovimento() {
-  if (!target_geral) return;
-  if (character.rip || estado != 'farmando') return;
-
-  try {
-    orbitAngle += 0.25;
-
-    // Ajusta o raio da órbita para estar sempre ao alcance do ataque
-    let radius = Math.min(25, character.range - 2);
-
-    let newX = target_geral.x + Math.cos(orbitAngle) * radius;
-    let newY = target_geral.y + Math.sin(orbitAngle) * radius;
-
-    if (can_move_to(newX, newY)) {
-        move(newX, newY); // move é mais leve que xmove para micro-movimentos
-    }
   } catch(e) {
     console.error(e);
   }
 
-  setTimeout(loopMovimento, 100);
+  setTimeout(farmLoop, Math.max(100, parent.next_skill["attack"].getTime() - Date.now()));
 }
-loopMovimento();
+farmLoop();
 
-// --- FUNÇÕES DE SUPORTE ---
+
+// ================== INVENTÁRIO ==================
 function getEmptySlots() {
-  let empty = 0;
-  for (let i = 0; i < character.items.length; i++) {
-    if (!character.items[i]) empty++;
-  }
-  return empty;
+  return character.items.filter(i => !i).length;
 }
 
 function verificarInventario() {
   if (estado !== "farmando") return;
+
   if (getEmptySlots() <= CONFIG.MIN_FREE_SLOTS) {
-    enviarPedidoMerchant('coletarItens');
+    enviarPedidoMerchant("collect_items");
   } else if (character.gold > CONFIG.MAX_GOLD) {
-    enviarPedidoMerchant('coletarOuro');
+    enviarPedidoMerchant("collect_gold");
   }
 }
 
 function verificarSuprimentos() {
   if (estado !== "farmando" || pedidoSuprimentoEnviado) return;
-  let precisaDePotions = CONFIG.POTION_TYPES.some(function (id) {
-    return quantity(id) < CONFIG.MIN_POTIONS;
-  });
-  if (precisaDePotions) {
-    enviarPedidoMerchant('reabastecer');
+
+  const precisa = CONFIG.POTION_TYPES.some(id => quantity(id) < CONFIG.MIN_POTIONS);
+
+  if (precisa) {
+    enviarPedidoMerchant("supply");
     pedidoSuprimentoEnviado = true;
   }
 }
 
-function enviarPedidoMerchant(tipoJob) {
-  send_cm(CONFIG.MERCHANT, {
-    job: tipoJob,
+// ================== COMM ==================
+function enviarPedidoMerchant(tipo) {
+  if (estado === "esperando_merchant") return;
+
+  let payload = {
+    type: tipo,
     map: character.map,
     x: character.x,
-    y: character.y,
-    items: CONFIG.POTION_TYPES.map(function (id) {
-      return { name: id, q: CONFIG.REFILL_QUANTITY };
-    })
-  });
+    y: character.y
+  };
+
+  if (tipo === "supply") {
+    payload.items = CONFIG.POTION_TYPES
+      .map(id => {
+        let need = CONFIG.REFILL_QUANTITY - quantity(id);
+        return need > 0 ? { name: id, q: need } : null;
+      })
+      .filter(Boolean);
+  }
+
+  send_cm(CONFIG.MERCHANT, payload);
   estado = "esperando_merchant";
 }
 
-function gerenciarRecursos() {
-  if (character.rip) return;
-  let should_heal = (typeof safeties === 'undefined' || safeties);
-  if (should_heal && (character.hp < CONFIG.MIN_HP || character.mp < CONFIG.MIN_MP)) {
-    use_hp_or_mp();
-  }
-}
-
-// --- EVENTOS ---
-
-function on_party_invite(name) {
-  if (name === CONFIG.LEADER) accept_party_invite(name);
-}
-
-character.on("cm", function (m) {
+// ================== EVENTOS ==================
+character.on("cm", (m) => {
   if (m.name !== CONFIG.MERCHANT) return;
-  let data = m.message || m.data;
-  if (!data || data.action !== "cheguei") return;
 
-  if (character.gold > 5000) send_gold(CONFIG.MERCHANT, character.gold - 5000);
-  for (let i = 0; i < 42; i++) {
-    let item = character.items[i];
-    if (item && CONFIG.POTION_TYPES.indexOf(item.name) === -1) {
-      send_item(CONFIG.MERCHANT, i, item.q || 1);
+  const data = m.message;
+
+  if (data?.type === "arrived") {
+
+    // 💰 GOLD
+    if (character.gold > 5000) {
+      send_gold(CONFIG.MERCHANT, character.gold - 5000);
     }
+
+    // 📦 ITEMS
+    for (let i = 0; i < character.items.length; i++) {
+      let item = character.items[i];
+      if (item && !CONFIG.POTION_TYPES.includes(item.name)) {
+        send_item(CONFIG.MERCHANT, i, item.q || 1);
+      }
+    }
+
+    setTimeout(() => {
+      send_cm(CONFIG.MERCHANT, { type: "done" });
+
+      estado = "farmando";
+      pedidoSuprimentoEnviado = false;
+
+      clear_target();
+      smart_move(CONFIG.TARGETS[0]);
+
+    }, 1000);
   }
-  setTimeout(function () {
-    send_cm(CONFIG.MERCHANT, { job: 'finalizado' });
-    estado = "farmando";
-    pedidoSuprimentoEnviado = false;
-  }, 2000);
 });
 
-// Loop de Gerenciamento (10s)
-setInterval(function () {
-  if (character.rip) {
-    respawn();
-    return;
+// ================== LOOPS ==================
+setInterval(() => {
+  if (!character.rip) {
+    verificarInventario();
+    verificarSuprimentos();
   }
-  verificarInventario();
-  verificarSuprimentos();
-}, 10000);
+}, 5000);
 
-// Loop Principal (250ms)
-let _inter_warrior = setInterval(function () {
+setInterval(() => {
   if (character.rip) return;
-  loot();
-  gerenciarRecursos();
-}, 250);
 
-if (typeof _last_inter_warrior !== 'undefined') clearInterval(_last_inter_warrior);
-var _last_inter_warrior = _inter_warrior;
+  loot();
+
+  if (character.hp < CONFIG.MIN_HP || character.mp < CONFIG.MIN_MP) {
+    use_hp_or_mp();
+  }
+
+  // 🎯 DRAW
+  clear_drawings();
+  draw_circle(character.x, character.y, character.range, 2, "green");
+
+}, 250);

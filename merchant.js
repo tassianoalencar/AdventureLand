@@ -22,6 +22,16 @@ const CONFIG = {
     firebow: 6,
     wcap: 7,
     basher: 7
+  },
+  upgrade_scrolls: {
+    0: "scroll0",
+    1: "scroll0",
+    2: "scroll0",
+    3: "scroll1",
+    4: "scroll1",
+    5: "scroll1",
+    6: "scroll2",
+    7: "scroll2"
   }
 };
 
