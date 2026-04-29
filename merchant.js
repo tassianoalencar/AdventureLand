@@ -1,194 +1,468 @@
-const merchantConfig = {
-    venda: { map: 'main', x: -6, y: 70 },
-    npc_potions: { map: 'main', x: 56, y: -122 },
-    npc_scrolls: { map: 'main', x: -464, y: -65 }, // Localização do Lucas
-    meusPersonagens: ['MyCruell', 'RockStar', 'CruellWR'], // Substitua pelos seus nomes
-    minGoldToKeep: 50000,
-    maxUpgradeLevel: 8,
-    itemsUpgrade: [],
-    lixosVenda: [
-        "ringsj", "hpamulet", "stramulet", "hpbelt", "vitring",
-        "whitegloves", "phelmet", "skullamulet", "dexamulet", "dexring", "intamulet", "intring", "vitearring", "dexearring",
-        "wshoes",
-    ],
+/* eslint-disable no-undef */
+
+// ================== CONFIG ==================
+const CONFIG = {
+  potion_npc: { map: "main", x: -204, y: -91 },
+  store_spot: { map: "main", x: 10, y: 10 },
+  min_potion_stock: 5000,
+  exchange_npc: { map: "main", x: -21, y: -429 },
+  exchange_items: [
+    { name: "gem0", min: 1 }
+  ],
+  sell_npc: { map: "main", x: -75, y: -110 }, // NPC vendedor (ajuste se quiser)
+  sell_trash: [
+    "slimestaff",
+    "hpamulet",
+    "ringsj",
+    "hpbelt"
+  ],
+  upgrade_npc: { map: "main", x: -204, y: -91 }, // mesmo npc das potions (upgrade)
+  upgrade_items: {
+    fireblade: 6,
+    firebow: 6,
+    wcap: 7,
+    basher: 7
+  }
 };
 
-let jobAtual = '';
-let status = {
-    vendendo: false,
-    solicitante: null,
-    destino: null,
-    itensPedidos: []
+const my_characters = ['MyCruell', 'RockStar', 'CruellWR'];
+
+// ================== STATE ==================
+const state = {
+  queue: [],
+  current: null,
+  running: false,
 };
 
-async function loopPrincipal() {
-    try {
-        if (character.rip) return;
-
-        if (character.gold > merchantConfig.minGoldToKeep) {
-			jobAtual = 'depositoBanco';
-			
-            await smart_move('bank');
-            await parent.socket.emit("bank", {
-                operation: "deposit",
-                amount: character.gold - merchantConfig.minGoldToKeep
-            });
-			
-			jobAtual = 'venda';
-        }
-
-        // 1. PRIORIDADE: Se o Ranger pediu poções e eu não as tenho, vou comprar primeiro
-        if (jobAtual === 'reabastecer' && !temItensNecessarios()) {
-            fecharLojaSeAberta();
-            await irComprarSuprimentos();
-            return;
-        }
-
-        // 2. MANUTENÇÃO: Se estiver livre na vila, faz upgrades para economizar espaço
-        if (jobAtual === 'venda' && !character.moving) {
-            await processarItens();
-        }
-
-        // 3. MOVIMENTAÇÃO: Define para onde o Merchant deve ir
-        const task = jobAtual === 'venda' ? merchantConfig.venda : status.destino;
-
-        if (task) {
-            const dist = distance(character, task);
-            if (dist > 25) {
-                if (!character.moving) {
-                    fecharLojaSeAberta();
-                    await smart_move({ map: task.map, x: task.x, y: task.y });
-                }
-            } else {
-                executarAcaoLocal();
-            }
-        }
-    } catch (e) {
-        console.error("Erro no Merchant Loop:", e);
-    }
-    setTimeout(loopPrincipal, 1000);
+// ================== HELPERS ==================
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
-// --- LÓGICA DE UPGRADE ---
-async function processarItens() {
-    for (let i = 0; i < character.isize; i++) {
-        let item = character.items[i];
-        if (!item) continue;
+function addJob(type, data = {}) {
+  state.queue.push({ type, data });
+}
 
-        // 1. Lógica de Venda de Lixo (Vende se estiver no NPC)
-        if (merchantConfig.lixosVenda.includes(item.name)) {
-            game_log("Vendendo lixo: " + item.name);
-            sell(i, item.q || 1);
-            continue; // Pula para o próximo item
+function addPriorityJob(type, data = {}) {
+  state.queue.unshift({ type, data });
+}
+
+async function ensureScroll(scrollName, amount = 10) {
+  let index = character.items.findIndex(i => i && i.name === scrollName);
+
+  if (index !== -1) return index;
+
+  // vai até npc
+  await smart_move(CONFIG.potion_npc);
+  await sleep(300);
+
+  await buy(scrollName, amount);
+  await sleep(300);
+
+  return character.items.findIndex(i => i && i.name === scrollName);
+}
+
+function getScrollForItem(item) {
+  const gItem = G.items[item.name];
+  if (!gItem) return null;
+
+  const grades = gItem.grades || [0, 3, 6, 9];
+  const tier = gItem.tier || 1;
+
+  let scroll;
+
+  if (item.level < grades[1]) scroll = 0;
+  else if (item.level < grades[2]) scroll = 1;
+  else if (item.level < grades[3]) scroll = 2;
+  else scroll = 3;
+
+  // 🔥 aplica mínimo por tier
+  scroll = Math.max(scroll, tier - 1);
+
+  return "scroll" + scroll;
+}
+
+async function applyLuckBuff(playerName) {
+  const target = get_player(playerName);
+  if (!target) return;
+
+  // verifica se já tem buff
+  const buff = target.s?.mluck;
+
+  // se não tem ou está acabando (< 30s)
+  if (!buff || buff.ms < 30000) {
+    if (can_use("mluck")) {
+      await use_skill("mluck", playerName);
+      await sleep(200);
+      game_log(`Buff mluck aplicado em ${playerName}`);
+    }
+  }
+}
+
+// ================== JOB HANDLERS ==================
+const jobHandlers = {};
+
+// ================== SUPPLY ==================
+jobHandlers.supply = async (data) => {
+  const { name, map, x, y, items } = data;
+
+  if (character.stand) {
+    parent.close_merchant(41);
+    await sleep(300);
+  }
+
+  await smart_move({ map, x, y });
+
+  // 🧠 BUFF AQUI
+  await applyLuckBuff(name);
+
+  send_cm(name, { type: "arrived" });
+  await sleep(500);
+
+  for (let req of items || []) {
+    let remaining = req.q;
+
+    while (remaining > 0) {
+      let index = character.items.findIndex(i => i && i.name === req.name);
+
+      if (index === -1) break;
+
+      let item = character.items[index];
+      let amount = Math.min(item.q || 1, remaining);
+
+      send_item(name, index, amount);
+      remaining -= amount;
+
+      await sleep(200);
+    }
+  }
+};
+
+// ================== COLLECT GOLD ==================
+jobHandlers.collect_gold = async (data) => {
+  const { name, map, x, y } = data;
+
+  if (character.stand) {
+    parent.close_merchant(41);
+    await sleep(300);
+  }
+
+  await smart_move({ map, x, y });
+
+  // 🧠 BUFF
+  await applyLuckBuff(name);
+
+  send_cm(name, { type: "arrived" });
+};
+
+// ================== COLLECT ITEMS ==================
+jobHandlers.collect_items = async (data) => {
+  const { name, map, x, y } = data;
+
+  if (character.stand) {
+    parent.close_merchant(41);
+    await sleep(300);
+  }
+
+  await smart_move({ map, x, y });
+
+  // 🧠 BUFF
+  await applyLuckBuff(name);
+
+  send_cm(name, { type: "arrived" });
+};
+
+// ================== OPEN STORE ==================
+jobHandlers.open_store = async () => {
+  if (character.stand) return;
+
+  await smart_move(CONFIG.store_spot);
+  await sleep(300);
+
+  parent.open_merchant(41);
+};
+
+// ================== RESTOCK POTIONS ==================
+jobHandlers.restock_potions = async () => {
+  const POTIONS = ["hpot1", "mpot1"];
+  const POTION_PRICE = 100;
+
+  // ================== CALCULAR NECESSIDADE ==================
+  let totalCost = 0;
+  let needs = {};
+
+  for (let pot of POTIONS) {
+    const current = quantity(pot);
+    const needed = Math.max(0, CONFIG.min_potion_stock - current);
+
+    if (needed > 0) {
+      needs[pot] = needed;
+      totalCost += needed * POTION_PRICE;
+    }
+  }
+
+  if (totalCost === 0) {
+    return; // já tem estoque suficiente
+  }
+
+  // ================== FECHAR LOJA ==================
+  if (character.stand) {
+    parent.close_merchant(41);
+    await sleep(300);
+  }
+
+  // ================== PEGAR GOLD NO BANCO ==================
+  if (character.gold < totalCost) {
+    await smart_move("bank");
+    await sleep(500);
+
+    let missing = totalCost - character.gold;
+
+    // tenta sacar o necessário
+    parent.socket.emit("bank", {
+      operation: "withdraw",
+      amount: missing
+    });
+
+    await sleep(500);
+  }
+
+  // ================== IR PARA NPC ==================
+  await smart_move(CONFIG.potion_npc);
+  await sleep(500);
+
+  // ================== COMPRAR ==================
+  for (let pot in needs) {
+    let remaining = needs[pot];
+
+    while (remaining > 0) {
+      let buyAmount = Math.min(9999, remaining);
+
+      await buy(pot, buyAmount);
+
+      remaining -= buyAmount;
+      await sleep(200);
+    }
+
+    game_log(`Comprado ${needs[pot]} de ${pot}`);
+  }
+};
+
+// ================== EXCHANGE ITEMS ==================
+jobHandlers.exchange_items = async () => {
+  const ITEMS = CONFIG.exchange_items;
+
+  const hasItems = ITEMS.some(cfg => quantity(cfg.name) >= (cfg.min || 1));
+  if (!hasItems) return;
+
+  if (character.stand) {
+    parent.close_merchant(41);
+    await sleep(300);
+  }
+
+  await smart_move(CONFIG.exchange_npc);
+  await sleep(500);
+
+  for (let cfg of ITEMS) {
+    let min = cfg.min || 1;
+
+    while (quantity(cfg.name) >= min) {
+
+      // ⛔ espera terminar exchange atual
+      while (character.q.exchange) {
+        await sleep(200);
+      }
+
+      let index = character.items.findIndex(i => i && i.name === cfg.name);
+      if (index === -1) break;
+
+      exchange(index);
+
+      // ⛔ espera iniciar e terminar
+      await sleep(300);
+
+      while (character.q.exchange) {
+        await sleep(200);
+      }
+    }
+
+    game_log(`Exchange completo: ${cfg.name}`);
+  }
+};
+
+// ================== SELL TRASH ==================
+jobHandlers.sell_trash = async () => {
+  const TRASH = CONFIG.sell_trash;
+
+  // verifica se tem algo pra vender
+  const hasTrash = character.items.some(i => i && TRASH.includes(i.name));
+  if (!hasTrash) return;
+
+  // fecha loja
+  if (character.stand) {
+    parent.close_merchant(41);
+    await sleep(300);
+  }
+
+  // vai até o npc
+  await smart_move(CONFIG.sell_npc);
+  await sleep(500);
+
+  // vende itens
+  for (let i = 0; i < character.items.length; i++) {
+    const item = character.items[i];
+    if (!item) continue;
+
+    if (TRASH.includes(item.name)) {
+      sell(i, item.q || 1);
+      await sleep(150);
+    }
+  }
+
+  game_log("Itens lixo vendidos");
+};
+
+// ================== UPGRADE ITEMS ==================
+jobHandlers.upgrade_items = async () => {
+
+  const ITEMS = CONFIG.upgrade_items;
+
+  const hasUpgradable = character.items.some(item =>
+    item && ITEMS[item.name] !== undefined && item.level < ITEMS[item.name]
+  );
+
+  if (!hasUpgradable) return;
+
+  if (character.stand) {
+    parent.close_merchant(41);
+    await sleep(300);
+  }
+
+  await smart_move(CONFIG.upgrade_npc);
+  await sleep(500);
+
+  for (let i = 0; i < character.items.length; i++) {
+    let item = character.items[i];
+    if (!item) continue;
+
+    let maxLevel = ITEMS[item.name];
+    if (maxLevel === undefined) continue;
+
+    while (item && item.level < maxLevel) {
+
+      // espera upgrade atual
+      while (character.q.upgrade) {
+        await sleep(200);
+      }
+
+      const scrollName = getScrollForItem(item);
+
+      let scrollIndex = character.items.findIndex(i => i && i.name === scrollName);
+
+      // 🔥 COMPRA AUTOMÁTICA
+      if (scrollIndex === -1) {
+        scrollIndex = await ensureScroll(scrollName, 10);
+
+        if (scrollIndex === -1) {
+          game_log(`Falha ao obter ${scrollName}`);
+          break;
         }
+      }
 
-        // 2. Lógica de Upgrade (Apenas se estiver na lista de upgrade)
-        if (merchantConfig.itemsUpgrade.includes(item.name) && item.level < merchantConfig.maxUpgradeLevel) {
+      upgrade(i, scrollIndex);
 
-            let grade = item_grade(item);
-            let scroll_name = "scroll" + grade;
-            let scroll_slot = locate_item(scroll_name);
+      await sleep(300);
 
-            if (scroll_slot === -1) {
-                fecharLojaSeAberta();
-                if (distance(character, merchantConfig.npc_scrolls) > 30) {
-                    await smart_move(merchantConfig.npc_scrolls);
-                }
-                buy(scroll_name, 10);
-                return; // Para o loop para esperar a compra
-            }
+      while (character.q.upgrade) {
+        await sleep(200);
+      }
 
-            if (!character.q.upgrade) {
-                fecharLojaSeAberta();
-                game_log(`Upando ${item.name} para +${item.level + 1}`);
-                await upgrade(i, scroll_slot);
-                return; // Espera o próximo ciclo
-            }
-        }
+      item = character.items[i];
     }
+  }
+
+  game_log("Upgrade finalizado");
+};
+
+// ================== JOB RUNNER ==================
+async function jobRunner() {
+  if (state.running) return;
+  if (state.queue.length === 0) return;
+
+  state.running = true;
+  state.current = state.queue.shift();
+
+  try {
+    const handler = jobHandlers[state.current.type];
+    if (handler) {
+      await handler(state.current.data);
+    }
+  } catch (e) {
+    console.error(e);
+  }
+
+  state.current = null;
+  state.running = false;
 }
 
-// --- LÓGICA DE COMPRA DE POÇÕES ---
-async function irComprarSuprimentos() {
-    const npc = merchantConfig.npc_potions;
-    if (distance(character, npc) > 30) {
-        await smart_move(npc);
-    } else {
-        for (let item of status.itensPedidos) {
-            let qtdNecessaria = item.q - quantity(item.name);
-            if (qtdNecessaria > 0) {
-                buy(item.name, qtdNecessaria);
-                game_log(`Comprei ${qtdNecessaria}x ${item.name}`);
-            }
-        }
-    }
-}
+setInterval(jobRunner, 400);
 
-// --- AÇÕES AO CHEGAR NO DESTINO ---
-function executarAcaoLocal() {
-    // Se o job for venda, abre a loja
-    if (jobAtual === 'venda' && !status.vendendo) {
-        parent.open_merchant(41);
-        status.vendendo = true;
-        game_log("Loja aberta para negócios.");
-    }
+// ================== AUTO ==================
+setInterval(() => {
+  const POTIONS = ["hpot1", "mpot1"];
+  const needsRestock = POTIONS.some(pot => quantity(pot) < CONFIG.min_potion_stock);
+  const canExchange = CONFIG.exchange_items.some(cfg => quantity(cfg.name) >= (cfg.min || 1));
+  const TRASH = CONFIG.sell_trash;
+  const hasTrash = character.items.some(i => i && TRASH.includes(i.name));
 
-    // Se estiver perto do Ranger (solicitante)
-    if (status.solicitante) {
-        let alvo = get_player(status.solicitante);
-        if (alvo && distance(character, alvo) < 400) {
+  const hasUpgradable = character.items.some(item =>
+    item &&
+    CONFIG.upgrade_items[item.name] !== undefined &&
+    item.level < CONFIG.upgrade_items[item.name]
+  );
 
-            // Se for reabastecimento, envia as poções
-            if (jobAtual === 'reabastecer') {
-                status.itensPedidos.forEach(item => {
-                    let slot = locate_item(item.name);
-                    if (slot !== -1) send_item(status.solicitante, slot, item.q);
-                });
-            }
+  if (hasUpgradable && !state.running) {
+    addJob("upgrade_items");
+  }
 
-            // Avisa o Ranger que está pronto para receber/entregar
-            send_cm(status.solicitante, { action: "cheguei" });
-        }
-    }
-}
+  if (hasTrash && !state.running) {
+    addJob("sell_trash");
+  }
 
-// --- FUNÇÕES AUXILIARES ---
-function fecharLojaSeAberta() {
-    if (status.vendendo) {
-        parent.close_merchant();
-        status.vendendo = false;
-    }
-}
+  if (canExchange && !state.running) {
+    addJob("exchange_items");
+  }
 
-function temItensNecessarios() {
-    if (status.itensPedidos.length === 0) return true;
-    return status.itensPedidos.every(item => quantity(item.name) >= item.q);
-}
+  if (needsRestock && !state.running) {
+    addJob("restock_potions");
+  }
 
-// --- COMUNICAÇÃO ---
+  if (!state.running && state.queue.length === 0) {
+    addJob("open_store");
+  }
+}, 3000);
+
+// ================== EVENTS ==================
 character.on("cm", (m) => {
-    if (!merchantConfig.meusPersonagens.includes(m.name)) return;
+  if (!my_characters.includes(m.name)) return;
 
-    let data = typeof m.message === "string" ? JSON.parse(m.message) : m.message;
+  const data = m.message;
+  if (!data) return;
 
-    // Recebe chamados: coletarOuro, reabastecer ou coletarItens
-    if (['coletarOuro', 'reabastecer', 'coletarItens'].includes(data.job)) {
-        jobAtual = data.job;
-        status.solicitante = m.name;
-        status.destino = { map: data.map, x: data.x, y: data.y };
-        status.itensPedidos = data.items || [];
-        fecharLojaSeAberta();
-        game_log(`Novo trabalho: ${jobAtual} para ${m.name}`);
-    }
+  if (data.type === "collect_gold") {
+    addPriorityJob("collect_gold", { ...data, name: m.name });
+  }
 
-    // Quando o Ranger termina a transferência
-    if (data.job === 'finalizado') {
-        jobAtual = 'venda';
-        status.solicitante = null;
-        status.destino = null;
-        status.itensPedidos = [];
-        game_log("Trabalho concluído. A voltar para a vila.");
-    }
+  if (data.type === "collect_items") {
+    addPriorityJob("collect_items", { ...data, name: m.name });
+  }
+
+  if (data.type === "supply") {
+    addPriorityJob("supply", { ...data, name: m.name });
+  }
+
+  if (data.type === "done") {
+    // terminou atendimento → volta pra loja
+    addJob("open_store");
+  }
 });
-
-loopPrincipal();
