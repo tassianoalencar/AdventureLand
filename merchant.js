@@ -476,3 +476,9 @@ character.on("cm", (m) => {
     addJob("open_store");
   }
 });
+
+function on_party_invite(name) {
+  if (name === 'CruellWR') {
+	  accept_party_invite(name)
+  }
+}

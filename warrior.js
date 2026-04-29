@@ -1,28 +1,21 @@
-/**
- * warrior.js - clone do ranger com comportamento de tank
- */
-
-var CONFIG = {
-  MAX_GOLD: 500000,
+const CONFIG = {
+  MAX_GOLD: 500_000,
   TARGETS: ["squig"],
   PRIORITY_TARGETS: ["phoenix"],
   MERCHANT: "MerchCruell",
-
-  KITE_ENABLED: false,
-
+  KITE_ENABLED: true,
   MIN_FREE_SLOTS: 1,
   MIN_POTIONS: 50,
-  REFILL_QUANTITY: 999,
+  REFILL_QUANTITY: 1_000,
   POTION_TYPES: ["hpot1", "mpot1"],
-
   MIN_HP: character.max_hp * 0.5,
-  MIN_MP: character.max_mp * 0.3
+  MIN_MP: character.max_mp * 0.5,
 };
 
-var estado = "farmando";
-var pedidoSuprimentoEnviado = false;
+let estado = "farmando";
+let pedidoSuprimentoEnviado = false;
 
-// ================== FARM LOOP ==================
+// ================== LOOPS ==================
 async function farmLoop() {
   try {
 
@@ -41,7 +34,7 @@ async function farmLoop() {
 
     if (estado === "esperando_merchant") return;
 
-    var target = get_targeted_monster();
+    let target = get_targeted_monster();
 
     // PRIORITY
     if (!target || target.dead || CONFIG.PRIORITY_TARGETS.indexOf(target.mtype) === -1) {
@@ -72,7 +65,7 @@ async function farmLoop() {
 
     if (target) {
 
-      var dist = distance(character, target);
+      let dist = distance(character, target);
 
       // 🛡 Tank aproxima SEM kite
       if (dist > character.range) {
@@ -94,9 +87,9 @@ async function farmLoop() {
       }
 
       // stomp (se tiver)
-      if (can_use("stomp")) {
-        await use_skill("stomp");
-      }
+      // if (can_use("stomp")) {
+      //   await use_skill("stomp");
+      // }
 
     } else if (!smart.moving) {
       smart_move(CONFIG.TARGETS[0]);
@@ -110,6 +103,19 @@ async function farmLoop() {
 }
 farmLoop();
 
+async function party_convite() {
+  try {
+    if (Object.keys(parent.party).length < 4) {
+      send_party_invite('MyCruell');
+      send_party_invite('RockStar');
+      send_party_invite('MerchCruell');
+    }
+  } catch(e) {
+    console.error(e);
+  }
+  setTimeout(party_convite, 1000 * 60);
+}
+party_convite();
 
 // ================== INVENTÁRIO ==================
 function getEmptySlots() {
@@ -188,7 +194,7 @@ character.on("cm", (m) => {
       estado = "farmando";
       pedidoSuprimentoEnviado = false;
 
-      clear_target();
+      change_target(null);
       smart_move(CONFIG.TARGETS[0]);
 
     }, 1000);

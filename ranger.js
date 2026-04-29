@@ -1,11 +1,7 @@
-/**
- * ranger.js - FINAL (com respawn + recovery)
- */
-
 // ================== CONFIG ==================
 const CONFIG = {
-  MAX_GOLD: 500000,
-  TARGETS: ["squig","squigtoad"],
+  MAX_GOLD: 500_000,
+  TARGETS: ["squig"],
   PRIORITY_TARGETS: ["phoenix"],
   MERCHANT: "MerchCruell",
 
@@ -17,7 +13,7 @@ const CONFIG = {
 
   AOE_ENABLED: true,
 
-  REFILL_QUANTITY: 999,
+  REFILL_QUANTITY: 1_000,
   POTION_TYPES: ["hpot1", "mpot1"],
 
   MIN_HP: character.max_hp * 0.7,
@@ -213,7 +209,7 @@ character.on("cm", (m) => {
       estado = "farmando";
       pedidoSuprimentoEnviado = false;
 
-      clear_target();
+      change_target(null);
       smart_move(CONFIG.TARGETS[0]);
 
     }, 1000);
@@ -242,3 +238,9 @@ setInterval(() => {
   draw_circle(character.x, character.y, character.range, 2, "green");
 
 }, 250);
+
+function on_party_invite(name) {
+  if (name === 'CruellWR') {
+	  accept_party_invite(name)
+  }
+}

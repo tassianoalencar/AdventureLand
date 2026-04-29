@@ -1,22 +1,16 @@
-/**
- * priest.js - clone do ranger com comportamento de healer
- */
-
-var CONFIG = {
-  MAX_GOLD: 500000,
+// ================== PRIEST ==================
+const CONFIG = {
+  MAX_GOLD: 500_000,
   TARGETS: ["squig"],
   PRIORITY_TARGETS: ["phoenix"],
   MERCHANT: "MerchCruell",
-
   PARTY: ["MyCruell", "RockStar", "CruellWR"],
-
   MIN_FREE_SLOTS: 1,
   MIN_POTIONS: 50,
-  REFILL_QUANTITY: 999,
+  REFILL_QUANTITY: 1_000,
   POTION_TYPES: ["hpot1", "mpot1"],
-
   MIN_HP: character.max_hp * 0.7,
-  MIN_MP: character.max_mp * 0.3
+  MIN_MP: character.max_mp * 0.7
 };
 
 var estado = "farmando";
@@ -201,7 +195,7 @@ character.on("cm", (m) => {
       estado = "farmando";
       pedidoSuprimentoEnviado = false;
 
-      clear_target();
+      change_target(null);
       smart_move(CONFIG.TARGETS[0]);
 
     }, 1000);
@@ -230,3 +224,9 @@ setInterval(() => {
   draw_circle(character.x, character.y, character.range, 2, "green");
 
 }, 250);
+
+function on_party_invite(name) {
+  if (name === 'CruellWR') {
+	  accept_party_invite(name)
+  }
+}
